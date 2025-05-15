@@ -1,0 +1,7 @@
+path: ../datasets/mixed_cli_col/
+train: images/train
+val: images/val
+test: images/test
+
+names:
+  0: target
