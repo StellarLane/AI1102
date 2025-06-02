@@ -35,6 +35,57 @@ def find_bounding_boxes(image_path) -> tuple[any, list, list]:
 
     return result_img, bounding_boxes, normalized_cords
 
+def find_contours(mask, max_points=100):
+    """
+    根据mask中白色的部分来画出轮廓, 轮廓的点数会被限制在max_points以内
+    """
+    # Find contours in the binary mask
+    mask = cv2.imread(mask, cv2.IMREAD_GRAYSCALE)
+    h, w = mask.shape[:2]
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    reduced_contours = []
+    for contour in contours:
+        if len(contour) > max_points:
+            epsilon = 0.01 * cv2.arcLength(contour, True)  # Approximation factor
+            reduced_contour = cv2.approxPolyDP(contour, epsilon, True)
+            while len(reduced_contour) > max_points:
+                epsilon *= 1.1  # Increase approximation factor
+                reduced_contour = cv2.approxPolyDP(contour, epsilon, True)
+            reduced_contours.append(reduced_contour)
+        else:
+            reduced_contours.append(contour)
+
+    # 归一化每个点
+    norm_contours = []
+    for contour in reduced_contours:
+        if len(contour) > 0:
+            pts = contour.squeeze()
+            if len(pts.shape) == 1:
+                pts = np.expand_dims(pts, 0)
+            norm_pts = np.stack([pts[:,0]/w, pts[:,1]/h], axis=1)
+            norm_contours.append(norm_pts.tolist())
+    return norm_contours
+
+def create_seg_labels(dataset_path = "/home/stellarlane/main/finetune/clinicDB/archive/PNG/", truth_name = "Ground Truth"):
+    '''
+    为每个mask生成分割轮廓标签，保存在seg_label文件夹下。
+    每一行格式：0 x1 y1 x2 y2 ...
+    '''
+    seg_label_dir = os.path.join(dataset_path, "seg_label")
+    if not os.path.exists(seg_label_dir):
+        os.mkdir(seg_label_dir)
+    total = len(os.listdir(os.path.join(dataset_path, truth_name)))
+    for i in range(1, total + 1):
+        mask_path = os.path.join(dataset_path, truth_name, f"{i}.png")
+        contours = find_contours(mask_path)
+        label_file_path = os.path.join(seg_label_dir, f"{i}.txt")
+        with open(label_file_path, 'w') as f:
+            for contour in contours:
+                if len(contour) > 0:
+                    line = '0 ' + ' '.join([f"{x:.3f} {y:.3f}" for x, y in contour]) + '\n'
+                    f.write(line)
+
 def create_labels(dataset_path = "/home/stellarlane/main/finetune/clinicDB/archive/PNG/", truth_name = "Ground Truth"):
     '''
     按照yolo看得懂的格式根据clinicDB的ground truth来标数据, 其中每个图都会产生一个txt文件, 每一行第一个为类(这里只有一个, 0, 息肉), 后面为坐标(详见get_bounding_boxes)
@@ -67,7 +118,7 @@ def read_txt_lines(file_path) -> list:
 
 def build_dataset_multipleDB(ratio: float = 0.8, 
                              target_path: str = "/home/stellarlane/main/finetune/yolo/datasets/clinicDB/", 
-                             source_paths: list = "/home/stellarlane/main/finetune/clinicDB/archive/PNG/", 
+                             source_paths: list = ["/home/stellarlane/main/finetune/clinicDB/archive/PNG/"], 
                              image_folder_name: str = "Original",):
     '''
     ratio: 训练集和验证集的比例
@@ -117,7 +168,7 @@ def build_standalone_test_dataset(target_path: str, source_path: str):
             
 def build_dataset_multipleDB_with_test(ratio: list = [0.8, 0.1, 0.1],
                                        target_path: str = "/home/stellarlane/main/finetune/yolo/datasets/clinicDB/",
-                                       source_paths: list = "/home/stellarlane/main/finetune/clinicDB/archive/PNG/",
+                                       source_paths: list = ["/home/stellarlane/main/finetune/clinicDB/archive/PNG/"],
                                        image_folder_name: str = "Original",):
     '''
     包含了测试集的数据集划分,
@@ -146,20 +197,72 @@ def build_dataset_multipleDB_with_test(ratio: list = [0.8, 0.1, 0.1],
                 for ind in train_indices:
                     shutil.copy(f"{source_path}{image_folder_name}/{ind}.png", f"{target_path}images/train/{prev_train_indices + ind}.png")
                     shutil.copy(f"{source_path}label/{ind}.txt", f"{target_path}labels/train/{prev_train_indices + ind}.txt")
+                    
                 print(f"{source_path}: {len(train_indices)} train images, {len(val_indices)} val images", f"{len(test_indices)} test images")
                 prev_train_indices += len(train_indices)
                 
                 for ind in val_indices:
                     shutil.copy(f"{source_path}{image_folder_name}/{ind}.png", f"{target_path}images/val/{prev_val_indices + ind}.png")
                     shutil.copy(f"{source_path}label/{ind}.txt", f"{target_path}labels/val/{prev_val_indices + ind}.txt")
+
                 prev_val_indices += len(val_indices)
 
                 for ind in test_indices:
                     shutil.copy(f"{source_path}{image_folder_name}/{ind}.png", f"{target_path}images/test/{prev_test_indices + ind}.png")
                     shutil.copy(f"{source_path}label/{ind}.txt", f"{target_path}labels/test/{prev_test_indices + ind}.txt")
+                    
                 prev_test_indices += len(test_indices)
         
+def build_seg_dataset_multipleDB_with_test(ratio: list = [0.8, 0.1, 0.1],
+                                       target_path: str = "/home/stellarlane/main/finetune/yolo/datasets/clinicDB/",
+                                       source_paths: list = ["/home/stellarlane/main/finetune/clinicDB/archive/PNG/"],
+                                       image_folder_name: str = "Original",):
+    '''
+    包含了测试集的数据集划分,
+    ratio中分别为训练集, 验证集, 测试集的比例
+    '''
+    if not os.path.exists(target_path):
+            os.mkdir(target_path)
+            os.mkdir(f"{target_path}images")
+            os.mkdir(f"{target_path}images/train")
+            os.mkdir(f"{target_path}images/val")
+            os.mkdir(f"{target_path}images/test")
+            os.mkdir(f"{target_path}labels")
+            os.mkdir(f"{target_path}labels/train")
+            os.mkdir(f"{target_path}labels/val")
+            os.mkdir(f"{target_path}labels/test")
+            os.mkdir(f"{target_path}masks")
+            os.mkdir(f"{target_path}masks/train")
+            os.mkdir(f"{target_path}masks/val")
+            os.mkdir(f"{target_path}masks/test")
 
+            prev_train_indices = 0
+            prev_val_indices = 0
+            prev_test_indices = 0
+            for source_path in source_paths:
+                all_indices = np.arange(1, len(os.listdir(f"{source_path}{image_folder_name}")) + 1)
+                train_indices = np.random.choice(all_indices, int(len(all_indices) * ratio[0]), replace=False)
+                val_indices = np.setdiff1d(all_indices, train_indices)
+                test_indices = np.random.choice(val_indices, int(len(val_indices) * (ratio[2] / (ratio[1] + ratio[2]))), replace=False)
+                val_indices = np.setdiff1d(val_indices, test_indices)
+                for ind in train_indices:
+                    shutil.copy(f"{source_path}{image_folder_name}/{ind}.png", f"{target_path}images/train/{prev_train_indices + ind}.png")
+                    shutil.copy(f"{source_path}seg_label/{ind}.txt", f"{target_path}labels/train/{prev_train_indices + ind}.txt")
+                    shutil.copy(f"{source_path}masks/{ind}.png", f"{target_path}masks/train/{prev_train_indices + ind}.png")
+                print(f"{source_path}: {len(train_indices)} train images, {len(val_indices)} val images", f"{len(test_indices)} test images")
+                prev_train_indices += len(train_indices)
+                
+                for ind in val_indices:
+                    shutil.copy(f"{source_path}{image_folder_name}/{ind}.png", f"{target_path}images/val/{prev_val_indices + ind}.png")
+                    shutil.copy(f"{source_path}seg_label/{ind}.txt", f"{target_path}labels/val/{prev_val_indices + ind}.txt")
+                    shutil.copy(f"{source_path}masks/{ind}.png", f"{target_path}masks/val/{prev_val_indices + ind}.png")
+                prev_val_indices += len(val_indices)
+
+                for ind in test_indices:
+                    shutil.copy(f"{source_path}{image_folder_name}/{ind}.png", f"{target_path}images/test/{prev_test_indices + ind}.png")
+                    shutil.copy(f"{source_path}seg_label/{ind}.txt", f"{target_path}labels/test/{prev_test_indices + ind}.txt")
+                    shutil.copy(f"{source_path}masks/{ind}.png", f"{target_path}masks/test/{prev_test_indices + ind}.png")
+                prev_test_indices += len(test_indices)
 
 def build_dataset_clinicDB(ratio, target_path = "./datasets/clinicDB/", source_path = '../clinicDB/archive/PNG/'):
     '''
